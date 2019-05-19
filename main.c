@@ -1,10 +1,14 @@
 #define _XOPEN_SOURCE 500
+#define _DEFAULT_SOURCE
 #include <ftw.h>
+#include <signal.h>
 #include <stdio.h>
 #include <stdlib.h>
-#include <string.h>
 #include <sys/epoll.h>
 #include <sys/inotify.h>
+#include <sys/time.h>
+#include <sys/types.h>
+#include <sys/wait.h>
 #include <time.h>
 #include <unistd.h>
 
@@ -29,37 +33,18 @@ static int walk(const char *fpath, const struct stat *sb, int tflag,
 }
 
 int main(int argc, char *argv[]) {
+  sigset_t blockSet, prevMask;
   int efd;
   struct epoll_event ev, events[MAX_EVENTS];
   int nfds;
-  char *command;
-  size_t len = 0, prev_len;
+  pid_t cpid = 1, w;
+  struct timeval elap, prev, now = {0, 0};
+  struct timespec delay = {0, 500000000}; // 0.5 second
 
   if (argc < 3) {
     printf("Usage: %s PATH COMMAND\n");
     exit(EXIT_FAILURE);
   }
-
-  command = (char *)malloc(1);
-  if (command == NULL) {
-    perror("malloc");
-    exit(EXIT_FAILURE);
-  }
-  for (int i = 2; i < argc; i++) {
-    prev_len = len;
-    if (i > 2)
-      command[prev_len - 1] = ' ';
-    len = len + 1 + strlen(argv[i]);
-
-    command = (char *)realloc(command, len);
-    if (command == NULL) {
-      perror("realloc");
-      exit(EXIT_FAILURE);
-    }
-    strcpy(command + prev_len, argv[i]);
-  }
-
-  printf("Command to be executed: %s\n", command);
 
   ifd = inotify_init1(IN_CLOEXEC | IN_NONBLOCK);
   if (ifd == -1) {
@@ -85,19 +70,76 @@ int main(int argc, char *argv[]) {
     exit(EXIT_FAILURE);
   }
 
-  for (time_t prev = 0;;) {
+  sigemptyset(&blockSet);
+  sigaddset(&blockSet, SIGHUP);
+  if (sigprocmask(SIG_BLOCK, &blockSet, &prevMask) == -1) {
+    perror("sigprocmask1");
+    exit(EXIT_FAILURE);
+  }
+
+  for (;;) {
+    prev = now;
+    if (gettimeofday(&now, NULL) == -1) {
+      perror("gettimeofday");
+      exit(EXIT_FAILURE);
+    }
+    timersub(&now, &prev, &elap);
+
+    if (elap.tv_sec >= 4) {
+      // if (elap.tv_sec >= 1 || elap.tv_usec > 500000000) {
+      if (cpid != 1) {
+        w = kill(0, SIGHUP);
+        if (w == -1) {
+          perror("kill");
+          exit(EXIT_FAILURE);
+        }
+
+        w = waitpid(cpid, NULL, 0);
+        if (w == -1) {
+          perror("waitpid");
+          exit(EXIT_FAILURE);
+        }
+      }
+
+      cpid = fork();
+      if (cpid == -1) {
+        perror("fork");
+        exit(EXIT_FAILURE);
+      }
+      if (cpid == 0) {
+        if (sigprocmask(SIG_SETMASK, &prevMask, NULL) == -1) {
+          perror("sigprocmask2");
+          exit(EXIT_FAILURE);
+        }
+
+        printf("\n\n----------%ld %ld----------\n\n", now.tv_sec, now.tv_usec);
+
+        nanosleep(&delay, NULL);
+
+        execvp(argv[2], argv + 2);
+      }
+    }
+
     nfds = epoll_wait(efd, events, MAX_EVENTS, -1);
     if (nfds == -1) {
       perror("epoll_wait");
+      if (cpid != 1) {
+        w = kill(0, SIGHUP);
+        if (w == -1) {
+          perror("kill");
+          exit(EXIT_FAILURE);
+        }
+
+        w = waitpid(cpid, NULL, 0);
+        if (w == -1) {
+          perror("waitpid");
+          exit(EXIT_FAILURE);
+        }
+      }
       exit(EXIT_FAILURE);
-    }
-    if (time(NULL) - prev > 1) {
-      prev = time(NULL);
-      system(command);
     }
   }
 
-  free(command);
   close(ifd);
   exit(EXIT_SUCCESS);
 }

@@ -1,6 +1,6 @@
 # noti
 
-Monitor a dir and execute a command when changes happened in that dir. `Linux only`.
+Monitor a dir and execute a command when changes happened in that. `Linux only`.
 
 ## Compile & Install
 
