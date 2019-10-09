@@ -1,5 +1,6 @@
 #define _XOPEN_SOURCE 500
 #define _DEFAULT_SOURCE
+#include <errno.h>
 #include <ftw.h>
 #include <signal.h>
 #include <stdio.h>
@@ -38,11 +39,13 @@ int main(int argc, char *argv[]) {
   struct epoll_event ev, events[MAX_EVENTS];
   int nfds;
   pid_t cpid = 1, w;
-  struct timeval elap, prev, now = {0, 0};
+  struct timeval elap, now, prev = {0, 0};
   struct timespec delay = {0, 500000000}; // 0.5 second
+  char buf[4096];
+  ssize_t len;
 
   if (argc < 3) {
-    printf("Usage: %s PATH COMMAND\n");
+    printf("Usage: noti [PATH] [COMMAND]\n");
     exit(EXIT_FAILURE);
   }
 
@@ -78,15 +81,13 @@ int main(int argc, char *argv[]) {
   }
 
   for (;;) {
-    prev = now;
     if (gettimeofday(&now, NULL) == -1) {
-      perror("gettimeofday");
+      perror("gettimeofday, now");
       exit(EXIT_FAILURE);
     }
     timersub(&now, &prev, &elap);
 
-    if (elap.tv_sec >= 4) {
-      // if (elap.tv_sec >= 1 || elap.tv_usec > 500000000) {
+    if (elap.tv_sec >= 1) {
       if (cpid != 1) {
         w = kill(0, SIGHUP);
         if (w == -1) {
@@ -101,6 +102,11 @@ int main(int argc, char *argv[]) {
         }
       }
 
+      if (gettimeofday(&prev, NULL) == -1) {
+        perror("gettimeofday, prev");
+        exit(EXIT_FAILURE);
+      }
+
       cpid = fork();
       if (cpid == -1) {
         perror("fork");
@@ -113,7 +119,7 @@ int main(int argc, char *argv[]) {
         }
 
         printf("\n\n----------%ld %ld----------\n\n", now.tv_sec, now.tv_usec);
-
+        
         nanosleep(&delay, NULL);
 
         execvp(argv[2], argv + 2);
@@ -136,6 +142,12 @@ int main(int argc, char *argv[]) {
           exit(EXIT_FAILURE);
         }
       }
+      exit(EXIT_FAILURE);
+    }
+
+    len = read(ifd, buf, sizeof(buf));
+    if (len == -1 && errno != EAGAIN) {
+      perror("read");
       exit(EXIT_FAILURE);
     }
   }
